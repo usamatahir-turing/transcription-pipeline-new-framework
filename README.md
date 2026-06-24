@@ -19,14 +19,43 @@ Outputs per speaker:
 
 ## Setup
 
+### 1. Clone the repo
+
 ```powershell
-cd f:\Transcription_pipeline_new_framework
+git clone https://github.com/usamatahir-turing/transcription-pipeline-new-framework.git
+cd transcription-pipeline-new-framework
+```
+
+### 2. Create a virtual environment
+
+```powershell
 python -m venv .venv
+.venv\Scripts\activate
+```
+
+You should see `(.venv)` at the start of your prompt.
+
+### 3. Install dependencies with pip
+
+Upgrade pip first (recommended), then install everything from `requirements.txt`:
+
+```powershell
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+This installs the core packages: `numpy`, `soundfile`, `torch`, `torchaudio`, `qwen-asr`, `transformers`, and `accelerate`.
+
+**GPU (CUDA):** For faster ASR, use a machine with an NVIDIA GPU. If `pip install -r requirements.txt` gives you a CPU-only PyTorch build, install the CUDA build from [pytorch.org](https://pytorch.org/get-started/locally/) first, then run `pip install -r requirements.txt` again for the remaining packages.
+
+**Already have a venv?** Activate it and re-run:
+
+```powershell
 .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-CUDA is used when available (recommended for ASR).
+CUDA is used automatically when available (recommended for ASR).
 
 ## Run `create_segments.py`
 
