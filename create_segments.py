@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run segment creation + Qwen3 ASR; write {speaker}.seglst.json and {speaker}_qwen3.seglst.json."""
+"""Run segment creation + Qwen3 ASR + boundary fix; write .seglst.json, _qwen3, and _final outputs."""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +8,15 @@ import logging
 import sys
 import time
 from pathlib import Path
+
+from finalization_scripts.segment_boundary_fix import (
+    DEFAULT_MIN_TRIM_S,
+    DEFAULT_REF_MS,
+    EdgeTrimParams,
+    OUTPUT_SUFFIX as BOUNDARY_FINAL_SUFFIX,
+    fix_segment_boundaries,
+    load_seglst,
+)
 
 from segment_creation_scripts.segment_silence_split import (
     DEFAULT_MAX_SILENCE_S,
@@ -58,6 +67,10 @@ def qwen3_seglst_path(wav_path: Path) -> Path:
     return wav_path.with_name(f"{wav_path.stem}{QWEN3_SUFFIX}")
 
 
+def boundary_final_seglst_path(wav_path: Path) -> Path:
+    return wav_path.with_name(f"{wav_path.stem}{BOUNDARY_FINAL_SUFFIX}")
+
+
 def intermediate_paths(wav_path: Path, model: str) -> dict[str, Path]:
     speaker = wav_path.stem
     parent = wav_path.parent
@@ -68,6 +81,7 @@ def intermediate_paths(wav_path: Path, model: str) -> dict[str, Path]:
         "merged": parent / f"{speaker}{MERGED_SUFFIX}",
         "final": final_seglst_path(wav_path),
         "qwen3": qwen3_seglst_path(wav_path),
+        "boundary_final": boundary_final_seglst_path(wav_path),
     }
 
 
@@ -93,6 +107,61 @@ def maybe_write_seglst(
     log.info("Wrote intermediate: %s (%d segments)", path.name, len(segments))
 
 
+def plan_pipeline_stages(
+    paths: dict[str, Path],
+    *,
+    overwrite: bool,
+    run_asr: bool,
+    run_finalization: bool,
+) -> tuple[bool, bool, bool, bool]:
+    """Return (skip_all, do_segmentation, do_asr, do_finalize)."""
+    final_path = paths["final"]
+    qwen3_path = paths["qwen3"]
+    boundary_final_path = paths["boundary_final"]
+
+    if not overwrite:
+        if run_finalization and boundary_final_path.exists():
+            return True, False, False, False
+        if run_asr and not run_finalization and qwen3_path.exists():
+            return True, False, False, False
+        if not run_asr and final_path.exists():
+            return True, False, False, False
+
+    if overwrite:
+        return False, True, run_asr, run_finalization
+
+    do_finalize = run_finalization
+    do_asr = run_asr and not qwen3_path.exists()
+    if do_asr:
+        do_segmentation = not final_path.exists()
+    elif do_finalize:
+        do_segmentation = False
+    else:
+        do_segmentation = False
+
+    return False, do_segmentation, do_asr, do_finalize
+
+
+def job_needs_asr(
+    wav_path: Path,
+    model: str,
+    *,
+    overwrite: bool,
+    run_asr: bool,
+    run_finalization: bool,
+) -> bool:
+    if not run_asr:
+        return False
+    paths = intermediate_paths(wav_path, model)
+    skip_all, _, do_asr, _ = plan_pipeline_stages(
+        paths,
+        overwrite=overwrite,
+        run_asr=run_asr,
+        run_finalization=run_finalization,
+    )
+    return not skip_all and do_asr
+
+
 def run_pipeline(wav_path: Path, model: str) -> tuple[list[dict], ...]:
     speech = build_seglst(wav_path, model)
     rms_uncovered = combine_with_rms(wav_path, speech)
@@ -114,59 +183,110 @@ def process_wav(
     write_intermediates: bool,
     overwrite_intermediates: bool,
     run_asr: bool,
+    run_finalization: bool,
     asr,
     asr_batch_size: int,
     language: str | None,
-) -> tuple[int, int] | None:
+    min_trim_s: float,
+    ref_ms: float,
+) -> tuple[int, int, int] | None:
     paths = intermediate_paths(wav_path, model)
     final_path = paths["final"]
     qwen3_path = paths["qwen3"]
-    skip_target = qwen3_path if run_asr else final_path
+    boundary_final_path = paths["boundary_final"]
 
-    if skip_target.exists() and not overwrite_final:
-        log.info("Skipping (exists): %s", skip_target.name)
+    skip_all, do_segmentation, do_asr, do_finalize = plan_pipeline_stages(
+        paths,
+        overwrite=overwrite_final,
+        run_asr=run_asr,
+        run_finalization=run_finalization,
+    )
+    if skip_all:
+        if run_finalization:
+            log.info("Skipping (exists): %s", boundary_final_path.name)
+        elif run_asr:
+            log.info("Skipping (exists): %s", qwen3_path.name)
+        else:
+            log.info("Skipping (exists): %s", final_path.name)
         return None
 
-    t0 = time.time()
-    speech, rms_uncovered, split_silence, merged = run_pipeline(wav_path, model)
+    stage_names = [
+        name
+        for name, enabled in (
+            ("segmentation", do_segmentation),
+            ("ASR", do_asr),
+            ("finalization", do_finalize),
+        )
+        if enabled
+    ]
+    log.info("Running %s for %s", " -> ".join(stage_names), wav_path.name)
 
-    write_inter = write_intermediates or overwrite_intermediates
-    maybe_write_seglst(
-        paths["speech"],
-        speech,
-        enabled=write_inter,
-        overwrite=overwrite_intermediates,
-    )
-    maybe_write_seglst(
-        paths["rms_uncovered"],
-        rms_uncovered,
-        enabled=write_inter,
-        overwrite=overwrite_intermediates,
-    )
-    maybe_write_seglst(
-        paths["split_silence"],
-        split_silence,
-        enabled=write_inter,
-        overwrite=overwrite_intermediates,
-    )
-    maybe_write_seglst(
-        paths["merged"],
-        merged,
-        enabled=write_inter,
-        overwrite=overwrite_intermediates,
-    )
+    merged: list[dict]
+    if do_segmentation:
+        t0 = time.time()
+        speech, rms_uncovered, split_silence, merged = run_pipeline(wav_path, model)
 
-    write_seglst(final_path, merged)
-    log.info(
-        "%s -> %s (%d segments, %.1fs)",
-        wav_path.name,
-        final_path.name,
-        len(merged),
-        time.time() - t0,
-    )
+        write_inter = write_intermediates or overwrite_intermediates
+        maybe_write_seglst(
+            paths["speech"],
+            speech,
+            enabled=write_inter,
+            overwrite=overwrite_intermediates,
+        )
+        maybe_write_seglst(
+            paths["rms_uncovered"],
+            rms_uncovered,
+            enabled=write_inter,
+            overwrite=overwrite_intermediates,
+        )
+        maybe_write_seglst(
+            paths["split_silence"],
+            split_silence,
+            enabled=write_inter,
+            overwrite=overwrite_intermediates,
+        )
+        maybe_write_seglst(
+            paths["merged"],
+            merged,
+            enabled=write_inter,
+            overwrite=overwrite_intermediates,
+        )
+
+        write_seglst(final_path, merged)
+        log.info(
+            "%s -> %s (%d segments, %.1fs)",
+            wav_path.name,
+            final_path.name,
+            len(merged),
+            time.time() - t0,
+        )
+    elif do_asr:
+        if not final_path.is_file():
+            log.error(
+                "Cannot run ASR for %s: missing %s",
+                wav_path.name,
+                final_path.name,
+            )
+            return None
+        merged = load_seglst(final_path)
+        log.info("Loaded existing %s (%d segments)", final_path.name, len(merged))
+    else:
+        if not qwen3_path.is_file():
+            log.error(
+                "Cannot run finalization for %s: missing %s",
+                wav_path.name,
+                qwen3_path.name,
+            )
+            return None
+        merged = load_seglst(qwen3_path)
 
     transcribed = 0
-    if run_asr:
+    boundary_fixes = 0
+    qwen3_segments: list[dict] | None = None
+
+    if do_asr:
+        if asr is None:
+            raise RuntimeError("ASR model is not loaded")
         session_id = wav_path.parent.name
         qwen_lang = resolve_language(session_id, language)
         to_transcribe = sum(1 for item in merged if should_transcribe(item))
@@ -194,15 +314,38 @@ def process_wav(
             transcribed,
             time.time() - t_asr,
         )
+    elif do_finalize:
+        qwen3_segments = load_seglst(qwen3_path)
+        log.info("Loaded existing %s (%d segments)", qwen3_path.name, len(qwen3_segments))
 
-    return len(merged), transcribed
+    if do_finalize:
+        assert qwen3_segments is not None
+        t_fix = time.time()
+        trim_params = EdgeTrimParams(ref_ms=ref_ms, min_trim_s=min_trim_s)
+        final_segments, onset_fixes, offset_fixes = fix_segment_boundaries(
+            wav_path,
+            qwen3_segments,
+            trim_params=trim_params,
+        )
+        write_seglst(boundary_final_path, final_segments)
+        boundary_fixes = onset_fixes + offset_fixes
+        log.info(
+            "Finalized %s -> %s (%d onset + %d offset fixes, %.1fs)",
+            qwen3_path.name,
+            boundary_final_path.name,
+            onset_fixes,
+            offset_fixes,
+            time.time() - t_fix,
+        )
+
+    return len(merged), transcribed, boundary_fixes
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Create {speaker}.seglst.json via the segment pipeline, "
-            "then {speaker}_qwen3.seglst.json via Qwen3-ASR (default)."
+            "Create {speaker}.seglst.json, {speaker}_qwen3.seglst.json, and "
+            "{speaker}_final.seglst.json via the full pipeline (default)."
         )
     )
     parser.add_argument("--input", type=Path, default=default_input_root())
@@ -223,7 +366,10 @@ def main() -> int:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite final {speaker}.seglst.json and {speaker}_qwen3.seglst.json",
+        help=(
+            "Re-run all pipeline stages from scratch, ignoring existing outputs "
+            "({speaker}.seglst.json, {speaker}_qwen3.seglst.json, {speaker}_final.seglst.json)"
+        ),
     )
     parser.add_argument(
         "--keep-intermediates",
@@ -238,7 +384,24 @@ def main() -> int:
     parser.add_argument(
         "--skip-asr",
         action="store_true",
-        help="Only run segmentation; write {speaker}.seglst.json (no Qwen3 output)",
+        help="Only run segmentation; write {speaker}.seglst.json (no Qwen3 or final output)",
+    )
+    parser.add_argument(
+        "--skip-finalization",
+        action="store_true",
+        help="Run segmentation + ASR but skip boundary fix ({speaker}_final.seglst.json)",
+    )
+    parser.add_argument(
+        "--min-trim",
+        type=float,
+        default=DEFAULT_MIN_TRIM_S,
+        help="Apply boundary fix only when trim exceeds this many seconds (default: 0.02)",
+    )
+    parser.add_argument(
+        "--ref-ms",
+        type=float,
+        default=DEFAULT_REF_MS,
+        help="Edge reference window in ms for baseline RMS (default: 150)",
     )
     parser.add_argument(
         "--language",
@@ -274,22 +437,32 @@ def main() -> int:
 
     log.info("Using device: %s", _get_torch_device())
     run_asr = not args.skip_asr
+    run_finalization = run_asr and not args.skip_finalization
     asr = None
-    if run_asr:
-        asr = build_model(
-            args.asr_model,
-            args.device,
-            args.batch_size,
-            args.max_new_tokens,
-        )
 
     t_total = time.time()
     processed = 0
     skipped = 0
     total_segments = 0
     total_transcribed = 0
+    total_boundary_fixes = 0
 
     for wav_path in wav_jobs:
+        if asr is None and job_needs_asr(
+            wav_path,
+            args.model,
+            overwrite=args.overwrite,
+            run_asr=run_asr,
+            run_finalization=run_finalization,
+        ):
+            log.info("Loading ASR model...")
+            asr = build_model(
+                args.asr_model,
+                args.device,
+                args.batch_size,
+                args.max_new_tokens,
+            )
+
         result = process_wav(
             wav_path,
             args.model,
@@ -297,19 +470,35 @@ def main() -> int:
             write_intermediates=args.keep_intermediates,
             overwrite_intermediates=args.overwrite_intermediates,
             run_asr=run_asr,
+            run_finalization=run_finalization,
             asr=asr,
             asr_batch_size=args.batch_size,
             language=args.language,
+            min_trim_s=args.min_trim,
+            ref_ms=args.ref_ms,
         )
         if result is None:
             skipped += 1
         else:
-            seg_count, tx_count = result
+            seg_count, tx_count, fix_count = result
             processed += 1
             total_segments += seg_count
             total_transcribed += tx_count
+            total_boundary_fixes += fix_count
 
-    if run_asr:
+    if run_finalization:
+        log.info(
+            "Done: mode=%s | %d processed, %d skipped, %d segment(s), "
+            "%d transcribed, %d boundary fix(es) in %.1fs",
+            args.model,
+            processed,
+            skipped,
+            total_segments,
+            total_transcribed,
+            total_boundary_fixes,
+            time.time() - t_total,
+        )
+    elif run_asr:
         log.info(
             "Done: mode=%s | %d processed, %d skipped, %d segment(s), "
             "%d transcribed in %.1fs",

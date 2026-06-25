@@ -15,7 +15,8 @@ Outputs per speaker:
 | File | Description |
 |------|-------------|
 | `{speaker}.seglst.json` | Final merged segments |
-| `{speaker}_qwen3.seglst.json` | Segments with Qwen3 transcriptions (default run) |
+| `{speaker}_qwen3.seglst.json` | Segments with Qwen3 transcriptions |
+| `{speaker}_final.seglst.json` | Qwen3 output with RMS boundary fixes (default full run) |
 
 ## Setup
 
@@ -61,7 +62,14 @@ CUDA is used automatically when available (recommended for ASR).
 
 ### Full pipeline (default)
 
-Runs segmentation, then Qwen3 ASR. Skips speakers that already have `{speaker}_qwen3.seglst.json`.
+Runs segmentation → Qwen3 ASR → boundary fix. **Resumes from the first missing output** — it does not repeat completed stages unless you pass `--overwrite`.
+
+| Already present | What runs next |
+|-----------------|----------------|
+| `{speaker}_final.seglst.json` | Skip speaker |
+| `{speaker}_qwen3.seglst.json` only | Finalization only |
+| `{speaker}.seglst.json` only | ASR → finalization |
+| Only `.wav` | Full pipeline |
 
 ```powershell
 python create_segments.py --session NV-AR-SS04-CONVO10
@@ -81,15 +89,29 @@ python create_segments.py
 
 ### Segmentation only
 
-Writes `{speaker}.seglst.json` only (no GPU ASR). Skips if that file already exists.
+Writes `{speaker}.seglst.json` only (no GPU ASR or finalization). Skips if that file already exists.
 
 ```powershell
 python create_segments.py --session NV-AR-SS04-CONVO10 --skip-asr
 ```
 
+### ASR without boundary fix
+
+```powershell
+python create_segments.py --session NV-AR-SS04-CONVO10 --skip-finalization
+```
+
+### Standalone boundary fix
+
+If you already have `{speaker}_qwen3.seglst.json`:
+
+```powershell
+python finalization_scripts\segment_boundary_fix.py --session NV-AR-SS04-CONVO10
+```
+
 ### Re-run / overwrite
 
-Regenerate outputs even when they already exist:
+Re-run all stages from scratch, ignoring existing outputs:
 
 ```powershell
 python create_segments.py --session NV-AR-SS04-CONVO10 --overwrite
