@@ -1,0 +1,30 @@
+.git
+.gitignore
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.cache
+
+.env
+.env.*
+
+.vscode
+.idea
+
+# Local data (not needed in the image)
+input_audio_files
+api_data
+
+# Reference / QA scripts (not used by the API runtime)
+reference_files_dont_modify
+
+*.log
+
+# Keep requirements-docker.txt — copied in Dockerfile
+# (Do not list requirements-docker.txt here.)

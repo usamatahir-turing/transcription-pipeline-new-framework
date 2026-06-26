@@ -162,3 +162,32 @@ curl "http://127.0.0.1:8000/jobs/JOB_ID/result" -o emanuel_final.seglst.json
 ```
 
 Jobs run in a **background worker subprocess**. State is stored under `api_data/{job_id}/` (`status.json`, `result.json`, `worker.log`). The pipeline logic is the same as `create_segments.py`.
+
+## Docker / Cloud Run
+
+Build the GPU image from the repo root:
+
+```powershell
+docker build -t transcription-api .
+```
+
+Run locally (requires NVIDIA Docker runtime):
+
+```powershell
+docker run --gpus all -p 8080:8080 transcription-api
+```
+
+Push to Google Artifact Registry and deploy to **Cloud Run with GPU** (e.g. NVIDIA L4, 16 GiB RAM, timeout 3600 s, `--min-instances 1`). Use port **8080** (set automatically via `PORT`).
+
+```powershell
+gcloud builds submit --tag REGION-docker.pkg.dev/PROJECT_ID/REPO/transcription-api:latest .
+gcloud run deploy transcription-api `
+  --image REGION-docker.pkg.dev/PROJECT_ID/REPO/transcription-api:latest `
+  --region REGION `
+  --gpu 1 --gpu-type nvidia-l4 `
+  --cpu 4 --memory 16Gi --timeout 3600 `
+  --min-instances 1 --max-instances 1 `
+  --port 8080 --no-cpu-throttling
+```
+
+Docker dependencies are in `requirements-docker.txt` (includes NeMo for Sortformer). Local dev still uses `requirements.txt`.

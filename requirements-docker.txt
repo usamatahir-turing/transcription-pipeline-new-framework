@@ -1,0 +1,13 @@
+# PyTorch + CUDA runtime (matches Cloud Run GPU / CUDA 12.x).
+# torch/torchaudio come from this base image — do not reinstall in requirements-docker.txt.
+numpy>=1.24
+soundfile>=0.12
+qwen-asr>=0.0.6
+transformers>=4.46
+accelerate>=0.34
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart>=0.0.9
+# Sortformer segmentation (speech_detection.py)
+nemo-toolkit[asr]>=2.2.0
+huggingface_hub>=0.26.0
