@@ -27,8 +27,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-docker.txt .
-RUN pip install --upgrade pip && pip install -r requirements-docker.txt
+COPY requirements-docker.txt constraints-docker.txt .
+RUN pip install --upgrade pip && \
+    pip install -r requirements-docker.txt -c constraints-docker.txt && \
+    pip install --force-reinstall --no-deps \
+      torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 \
+      --index-url https://download.pytorch.org/whl/cu124 && \
+    python -c "import torch, torchaudio; print('torch', torch.__version__, 'torchaudio', torchaudio.__version__); torchaudio.functional.resample(torch.randn(1, 16000), 16000, 8000)"
 
 COPY api/ api/
 COPY finalization_scripts/ finalization_scripts/
