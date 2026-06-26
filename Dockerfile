@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-docker.txt constraints-docker.txt .
+COPY requirements-docker.txt constraints-docker.txt ./
 RUN pip install --upgrade pip && \
     pip install -r requirements-docker.txt -c constraints-docker.txt && \
     pip install --force-reinstall --no-deps \
