@@ -116,3 +116,49 @@ Re-run all stages from scratch, ignoring existing outputs:
 ```powershell
 python create_segments.py --session NV-AR-SS04-CONVO10 --overwrite
 ```
+
+## API (simple)
+
+Start the server from the repo root:
+
+```powershell
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn api.main:app --host 127.0.0.1 --port 8000
+```
+
+For local development you may add `--reload`, but avoid it while a job is running (reload kills in-flight work). Pipeline jobs run in a **separate worker process** so status requests stay responsive during NeMo/GPU work.
+
+Open interactive docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Liveness check |
+| POST | `/jobs` | Upload WAV + metadata; returns `job_id` (202) |
+| GET | `/jobs/{job_id}` | Job status |
+| GET | `/jobs/{job_id}/result` | Final segment JSON when complete |
+
+### Test with curl
+
+```powershell
+curl -X POST "http://127.0.0.1:8000/jobs" ^
+  -F "file=@input_audio_files\NV-PT-SS08-CONVO21\emanuel.b@turing.com.wav" ^
+  -F "session_id=NV-PT-SS08-CONVO21" ^
+  -F "speaker=emanuel.b@turing.com"
+```
+
+Poll status (replace `JOB_ID`):
+
+```powershell
+curl "http://127.0.0.1:8000/jobs/JOB_ID"
+```
+
+Download result when `status` is `completed`:
+
+```powershell
+curl "http://127.0.0.1:8000/jobs/JOB_ID/result" -o emanuel_final.seglst.json
+```
+
+Jobs run in a **background worker subprocess**. State is stored under `api_data/{job_id}/` (`status.json`, `result.json`, `worker.log`). The pipeline logic is the same as `create_segments.py`.
