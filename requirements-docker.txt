@@ -1,13 +1,13 @@
 # Docker deps for CUDA 12.4 base image (pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime).
-# torch/torchvision/torchaudio are pinned via constraints-docker.txt and reinstalled in Dockerfile.
+# torch/torchvision/torchaudio are pre/post-pinned in Dockerfile; do not add them here.
 numpy>=1.24,<2.0
 soundfile>=0.12
 qwen-asr>=0.0.6
 transformers>=4.46,<5
-accelerate>=0.34,<1.0
+accelerate==0.34.2
 fastapi>=0.115
 uvicorn[standard]>=0.32
 python-multipart>=0.0.9
-# Sortformer segmentation (speech_detection.py); <2.3 avoids pulling torch 2.12 / CUDA 13 wheels.
-nemo-toolkit[asr]>=2.2.0,<2.3.0
+# Sortformer segmentation (speech_detection.py)
+nemo-toolkit[asr]==2.2.1
 huggingface_hub>=0.26.0

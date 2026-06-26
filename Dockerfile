@@ -21,18 +21,32 @@ ENV PYTHONUNBUFFERED=1 \
     TORCH_HOME=/tmp/torch \
     NEMO_CACHE_DIR=/tmp/nemo
 
+ARG PYTORCH_INDEX=https://download.pytorch.org/whl/cu124
+ARG TORCH_VERSION=2.5.1+cu124
+ARG TORCHVISION_VERSION=0.20.1+cu124
+ARG TORCHAUDIO_VERSION=2.5.1+cu124
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     ffmpeg \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements-docker.txt constraints-docker.txt ./
+# Lock the CUDA 12.4 torch stack before other deps can upgrade torch.
 RUN pip install --upgrade pip && \
-    pip install -r requirements-docker.txt -c constraints-docker.txt && \
+    pip install \
+      torch==${TORCH_VERSION} \
+      torchvision==${TORCHVISION_VERSION} \
+      torchaudio==${TORCHAUDIO_VERSION} \
+      --index-url ${PYTORCH_INDEX}
+
+COPY requirements-docker.txt constraints-docker.txt ./
+RUN pip install -r requirements-docker.txt -c constraints-docker.txt && \
     pip install --force-reinstall --no-deps \
-      torch==2.5.1+cu124 torchvision==0.20.1+cu124 torchaudio==2.5.1+cu124 \
-      --index-url https://download.pytorch.org/whl/cu124 && \
+      torch==${TORCH_VERSION} \
+      torchvision==${TORCHVISION_VERSION} \
+      torchaudio==${TORCHAUDIO_VERSION} \
+      --index-url ${PYTORCH_INDEX} && \
     python -c "import torch, torchaudio; print('torch', torch.__version__, 'torchaudio', torchaudio.__version__); torchaudio.functional.resample(torch.randn(1, 16000), 16000, 8000)"
 
 COPY api/ api/

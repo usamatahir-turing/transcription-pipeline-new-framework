@@ -1,4 +1,4 @@
-# Keep the base image PyTorch stack; pip must not upgrade torch during NeMo/accelerate install.
-torch==2.5.1
-torchvision==0.20.1
-torchaudio==2.5.1
+# Block pip from upgrading torch beyond the base image 2.5.1+cu124 stack.
+torch>=2.5.1,<2.6
+torchvision>=0.20.1,<0.21
+torchaudio>=2.5.1,<2.6
