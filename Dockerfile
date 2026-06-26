@@ -22,9 +22,6 @@ ENV PYTHONUNBUFFERED=1 \
     NEMO_CACHE_DIR=/tmp/nemo
 
 ARG PYTORCH_INDEX=https://download.pytorch.org/whl/cu124
-ARG TORCH_VERSION=2.5.1+cu124
-ARG TORCHVISION_VERSION=0.20.1+cu124
-ARG TORCHAUDIO_VERSION=2.5.1+cu124
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
@@ -32,20 +29,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Lock the CUDA 12.4 torch stack before other deps can upgrade torch.
+COPY requirements-docker.txt ./
+# NeMo/accelerate may upgrade torch during install; restore matching CUDA 12.4 wheels last.
 RUN pip install --upgrade pip && \
-    pip install \
-      torch==${TORCH_VERSION} \
-      torchvision==${TORCHVISION_VERSION} \
-      torchaudio==${TORCHAUDIO_VERSION} \
-      --index-url ${PYTORCH_INDEX}
-
-COPY requirements-docker.txt constraints-docker.txt ./
-RUN pip install -r requirements-docker.txt -c constraints-docker.txt && \
-    pip install --force-reinstall --no-deps \
-      torch==${TORCH_VERSION} \
-      torchvision==${TORCHVISION_VERSION} \
-      torchaudio==${TORCHAUDIO_VERSION} \
+    pip install -r requirements-docker.txt && \
+    pip install --force-reinstall \
+      torch==2.5.1+cu124 \
+      torchvision==0.20.1+cu124 \
+      torchaudio==2.5.1+cu124 \
       --index-url ${PYTORCH_INDEX} && \
     python -c "import torch, torchaudio; print('torch', torch.__version__, 'torchaudio', torchaudio.__version__); torchaudio.functional.resample(torch.randn(1, 16000), 16000, 8000)"
 
@@ -59,5 +50,4 @@ RUN mkdir -p /app/api_data
 
 EXPOSE 8080
 
-# Cloud Run sets PORT; default 8080 for local runs.
 CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
