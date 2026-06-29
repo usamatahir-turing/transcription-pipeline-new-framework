@@ -36,6 +36,7 @@ DEFAULT_MODEL = "Qwen/Qwen3-ASR-1.7B"
 DEFAULT_DEVICE = "cuda:0"
 DEFAULT_BATCH_SIZE = 4
 DEFAULT_MAX_NEW_TOKENS = 256
+RMS_NOISE_LABEL = "[other-noise]"
 
 
 def default_input_root() -> Path:
@@ -105,6 +106,10 @@ def should_transcribe(item: dict) -> bool:
     return "model" in str(item.get("detection_method", ""))
 
 
+def is_rms_segment(item: dict) -> bool:
+    return item.get("detection_method") == "rms"
+
+
 def build_model(
     model_name: str, device: str, batch_size: int, max_new_tokens: int
 ):
@@ -143,6 +148,9 @@ def transcribe_segments(
     pending_clip: list[np.ndarray] = []
 
     for i, item in enumerate(segments):
+        if is_rms_segment(item):
+            words[i] = RMS_NOISE_LABEL
+            continue
         if not should_transcribe(item):
             continue
         start = _parse_time(item["start_time"])

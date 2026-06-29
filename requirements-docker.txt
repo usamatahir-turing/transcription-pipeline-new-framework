@@ -1,0 +1,12 @@
+# Docker deps for CUDA 12.4 base image (pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime).
+# torch/torchvision/torchaudio are restored after this install in the Dockerfile.
+numpy>=1.24
+soundfile>=0.12
+qwen-asr>=0.0.6
+transformers>=4.46
+accelerate>=0.34
+fastapi>=0.115
+uvicorn[standard]>=0.32
+python-multipart>=0.0.9
+nemo-toolkit[asr]>=2.2.0
+huggingface_hub>=0.26.0

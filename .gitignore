@@ -39,3 +39,4 @@ desktop.ini
 
 # Local audio data and pipeline outputs
 input_audio_files/
+api_data/
