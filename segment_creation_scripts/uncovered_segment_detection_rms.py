@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 DEFAULT_FRAME_MS = 20.0
 DEFAULT_HOP_MS = 10.0
 DEFAULT_NOISE_PERCENTILE = 20.0
-DEFAULT_THRESHOLD_DB = 10.0
+DEFAULT_THRESHOLD_DB = 14.0
 DEFAULT_HYSTERESIS_DB = 3.0
 DEFAULT_MIN_SILENCE_MS = 40.0
 DEFAULT_MIN_SHORT_EVENT_S = 0.05
@@ -26,6 +26,7 @@ DEFAULT_MAX_SHORT_EVENT_S = 1.0
 DEFAULT_MIN_PEAK = 0.003
 DEFAULT_MIN_MEAN_RMS = 0.0005
 DEFAULT_NOISE_FLOOR_MIN = 1e-5
+DEFAULT_MAX_RMS_SEGMENTS = 100
 
 MODEL_SEGLST_SUFFIX = "_model.seglst.json"
 OUTPUT_SUFFIX = "_model_with_rms_uncovered.seglst.json"
@@ -224,7 +225,23 @@ def _filter_by_energy(
     min_mean_rms: float,
 ) -> list[tuple[float, float]]:
     """Drop segments that are too quiet or are single-sample spikes."""
-    kept: list[tuple[float, float]] = []
+    return [
+        (start, end)
+        for start, end, _mean_rms in _filter_by_energy_scored(
+            wav, sr, segments, min_peak, min_mean_rms
+        )
+    ]
+
+
+def _filter_by_energy_scored(
+    wav: np.ndarray,
+    sr: int,
+    segments: list[tuple[float, float]],
+    min_peak: float,
+    min_mean_rms: float,
+) -> list[tuple[float, float, float]]:
+    """Return (start, end, mean_rms) for segments passing energy gates."""
+    kept: list[tuple[float, float, float]] = []
     for start, end in segments:
         i0 = max(0, int(start * sr))
         i1 = min(len(wav), int(end * sr))
@@ -237,8 +254,20 @@ def _filter_by_energy(
         mean_rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
         if mean_rms < min_mean_rms:
             continue
-        kept.append((start, end))
+        kept.append((start, end, mean_rms))
     return kept
+
+
+def _select_top_by_mean_rms(
+    scored: list[tuple[float, float, float]],
+    max_count: int,
+) -> list[tuple[float, float]]:
+    """Keep at most max_count segments, ranked by descending mean RMS."""
+    if max_count <= 0 or len(scored) <= max_count:
+        return [(start, end) for start, end, _ in scored]
+
+    ranked = sorted(scored, key=lambda item: (-item[2], item[0]))
+    return [(start, end) for start, end, _ in ranked[:max_count]]
 
 
 def detect_short_rms_segments(
@@ -249,6 +278,7 @@ def detect_short_rms_segments(
     max_duration_s: float = DEFAULT_MAX_SHORT_EVENT_S,
     min_peak: float = DEFAULT_MIN_PEAK,
     min_mean_rms: float = DEFAULT_MIN_MEAN_RMS,
+    max_rms_segments: int = DEFAULT_MAX_RMS_SEGMENTS,
 ) -> list[tuple[float, float]]:
     """Detect short RMS bursts only outside model-detected segments."""
     params = energy_params or EnergyParams()
@@ -272,7 +302,8 @@ def detect_short_rms_segments(
         candidates.extend(regions)
 
     candidates = _filter_by_duration(candidates, min_duration_s, max_duration_s)
-    return _filter_by_energy(wav, sr, candidates, min_peak, min_mean_rms)
+    scored = _filter_by_energy_scored(wav, sr, candidates, min_peak, min_mean_rms)
+    return _select_top_by_mean_rms(scored, max_rms_segments)
 
 
 def _parse_time(value) -> float:
@@ -348,7 +379,10 @@ def collect_jobs(input_root: Path, session: str | None) -> list[tuple[Path, Path
 
 
 def combine_with_rms(
-    wav_path: Path, model_segments: list[dict]
+    wav_path: Path,
+    model_segments: list[dict],
+    *,
+    max_rms_segments: int = DEFAULT_MAX_RMS_SEGMENTS,
 ) -> list[dict]:
     """Add RMS segments outside model regions; return combined seglst (no file write)."""
     session_id = wav_path.parent.name
@@ -358,7 +392,9 @@ def combine_with_rms(
         for item in model_segments
         if _parse_time(item["end_time"]) > _parse_time(item["start_time"])
     ]
-    rms_segments = detect_short_rms_segments(wav_path, annotations)
+    rms_segments = detect_short_rms_segments(
+        wav_path, annotations, max_rms_segments=max_rms_segments
+    )
     combined = [model_entry(session_id, speaker, item) for item in model_segments]
     for start, end in rms_segments:
         combined.append(segment_dict(session_id, speaker, start, end, "rms"))
@@ -366,12 +402,20 @@ def combine_with_rms(
     return combined
 
 
-def process_pair(model_path: Path, wav_path: Path, output_path: Path) -> tuple[int, int]:
+def process_pair(
+    model_path: Path,
+    wav_path: Path,
+    output_path: Path,
+    *,
+    max_rms_segments: int = DEFAULT_MAX_RMS_SEGMENTS,
+) -> tuple[int, int]:
     if not wav_path.is_file():
         raise FileNotFoundError(f"Missing WAV for {model_path.name}: {wav_path}")
 
     model_segments = load_seglst(model_path)
-    combined = combine_with_rms(wav_path, model_segments)
+    combined = combine_with_rms(
+        wav_path, model_segments, max_rms_segments=max_rms_segments
+    )
 
     with output_path.open("w", encoding="utf-8") as fh:
         json.dump(combined, fh, indent=2)
@@ -389,6 +433,15 @@ def main() -> int:
     parser.add_argument("--input", type=Path, default=default_input)
     parser.add_argument("--session", type=str, default=None)
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--max-rms-segments",
+        type=int,
+        default=DEFAULT_MAX_RMS_SEGMENTS,
+        help=(
+            "Maximum RMS segments to keep per speaker, ranked by mean RMS "
+            f"(default: {DEFAULT_MAX_RMS_SEGMENTS})"
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -433,7 +486,12 @@ def main() -> int:
     total_rms = 0
     for model_path, wav_path, out_path in to_run:
         t0 = time.time()
-        model_count, rms_count = process_pair(model_path, wav_path, out_path)
+        model_count, rms_count = process_pair(
+            model_path,
+            wav_path,
+            out_path,
+            max_rms_segments=args.max_rms_segments,
+        )
         total_model += model_count
         total_rms += rms_count
         log.info(

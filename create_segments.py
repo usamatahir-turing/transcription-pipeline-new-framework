@@ -59,6 +59,38 @@ def default_input_root() -> Path:
     return Path(__file__).resolve().parent / "input_audio_files"
 
 
+def normalize_speaker_id(name: str) -> str:
+    value = name.strip()
+    if value.lower().endswith(".wav"):
+        return value[:-4]
+    return value
+
+
+def resolve_wav_jobs(
+    input_root: Path,
+    sessions: list[str],
+    speakers: list[str],
+) -> list[Path]:
+    """Return WAV paths for explicit speaker(s) within the given session folder(s)."""
+    jobs: list[Path] = []
+    for session_name in sessions:
+        session_dir = input_root / session_name
+        if not session_dir.is_dir():
+            raise FileNotFoundError(f"Session folder not found: {session_dir}")
+        for speaker in speakers:
+            wav_path = session_dir / f"{speaker}.wav"
+            if wav_path.is_file():
+                jobs.append(wav_path)
+            else:
+                log.warning(
+                    "No WAV for speaker %s in session %s (%s)",
+                    speaker,
+                    session_name,
+                    wav_path.name,
+                )
+    return sorted(jobs)
+
+
 def final_seglst_path(wav_path: Path) -> Path:
     return wav_path.with_name(f"{wav_path.stem}{FINAL_SUFFIX}")
 
@@ -358,6 +390,17 @@ def main() -> int:
         help="One or more session folders under --input (default: all sessions)",
     )
     parser.add_argument(
+        "--speaker",
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="SPEAKER",
+        help=(
+            "Speaker WAV stem(s), e.g. felipe.m1@turing.com "
+            "(requires --session; processes only matching WAVs)"
+        ),
+    )
+    parser.add_argument(
         "--model",
         choices=["model", "silero", "sortformer"],
         default="model",
@@ -430,7 +473,14 @@ def main() -> int:
         log.error("Input directory does not exist: %s", input_root)
         return 1
 
-    wav_jobs = collect_wav_jobs(input_root, args.session)
+    if args.speaker and not args.session:
+        parser.error("--speaker requires at least one --session")
+
+    if args.speaker:
+        speakers = [normalize_speaker_id(name) for name in args.speaker]
+        wav_jobs = resolve_wav_jobs(input_root, list(args.session), speakers)
+    else:
+        wav_jobs = collect_wav_jobs(input_root, args.session)
     if not wav_jobs:
         log.warning("No WAV files found under %s", input_root)
         return 0
