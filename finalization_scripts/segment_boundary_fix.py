@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trim segment edge padding using a file-wide edge RMS baseline."""
+"""Trim segment edge padding using a file-wide edge RMS baseline from model segments."""
 from __future__ import annotations
 
 import argparse
@@ -23,12 +23,14 @@ OUTPUT_SUFFIX = "_final.seglst.json"
 DEFAULT_REF_MS = 150.0
 DEFAULT_FRAME_MS = 20.0
 DEFAULT_HOP_MS = 10.0
-DEFAULT_EDGE_MARGIN = 1.8
+DEFAULT_EDGE_MARGIN = 2.5
 DEFAULT_MIN_TRIM_S = 0.02
 DEFAULT_MAX_REF_FRACTION = 0.25
 DEFAULT_REF_PERCENTILE = 25.0
 DEFAULT_SPEECH_SKIP_RATIO = 6.0
 DEFAULT_NOISE_PERCENTILE = 15.0
+DEFAULT_MIN_SPEECH_WINDOWS = 4
+DEFAULT_TRIM_PASSES = 2
 
 
 @dataclass
@@ -42,6 +44,8 @@ class EdgeTrimParams:
     ref_percentile: float = DEFAULT_REF_PERCENTILE
     speech_skip_ratio: float = DEFAULT_SPEECH_SKIP_RATIO
     noise_percentile: float = DEFAULT_NOISE_PERCENTILE
+    min_speech_windows: int = DEFAULT_MIN_SPEECH_WINDOWS
+    trim_passes: int = DEFAULT_TRIM_PASSES
 
 
 @dataclass(frozen=True)
@@ -154,6 +158,11 @@ def _pool_percentile(levels: list[float], percentile: float, fallback: float) ->
     return max(float(np.percentile(levels, percentile)), 1e-10)
 
 
+def _use_for_baseline(item: dict) -> bool:
+    """Only model-family segments define edge padding baselines (not RMS gap-fill)."""
+    return str(item.get("detection_method", "")) == "model"
+
+
 def _compute_global_baselines(
     wav: np.ndarray,
     sr: int,
@@ -165,6 +174,9 @@ def _compute_global_baselines(
     trailing_levels: list[float] = []
 
     for item in segments:
+        if not _use_for_baseline(item):
+            continue
+
         start = _parse_time(item["start_time"])
         end = _parse_time(item["end_time"])
         if end <= start:
@@ -234,6 +246,66 @@ def _time_at_window_end(
     return end_sample / sr
 
 
+def _leading_edge_after_sustained_speech(
+    rms: np.ndarray,
+    threshold: float,
+    min_run: int,
+    i0: int,
+    hop_len: int,
+    sr: int,
+    seg_start: float,
+) -> float:
+    """Scan outward from segment start; trim until min_run consecutive windows exceed threshold."""
+    if min_run <= 1:
+        for index, level in enumerate(rms):
+            if level > threshold:
+                return _time_at_window_start(i0, index, hop_len, sr)
+        return seg_start
+
+    run = 0
+    for index, level in enumerate(rms):
+        if level > threshold:
+            run += 1
+            if run >= min_run:
+                outer_index = index - min_run + 1
+                return _time_at_window_start(i0, outer_index, hop_len, sr)
+        else:
+            run = 0
+    return seg_start
+
+
+def _trailing_edge_after_sustained_speech(
+    rms: np.ndarray,
+    threshold: float,
+    min_run: int,
+    i0: int,
+    i1: int,
+    hop_len: int,
+    frame_len: int,
+    sr: int,
+    seg_end: float,
+) -> float:
+    """Scan inward from segment end; trim until min_run consecutive windows exceed threshold."""
+    if min_run <= 1:
+        for index in range(len(rms) - 1, -1, -1):
+            if rms[index] > threshold:
+                return _time_at_window_end(i0, index, hop_len, frame_len, sr, i1)
+        return seg_end
+
+    run = 0
+    for index in range(len(rms) - 1, -1, -1):
+        if rms[index] > threshold:
+            run += 1
+            if run >= min_run:
+                outer_index = index + min_run - 1
+                return _time_at_window_end(
+                    i0, outer_index, hop_len, frame_len, sr, i1
+                )
+        else:
+            run = 0
+    return seg_end
+
+
 def _trim_leading_edge(
     wav: np.ndarray,
     i0: int,
@@ -262,10 +334,15 @@ def _trim_leading_edge(
         return seg_start
 
     threshold = _edge_threshold(baselines.leading, baselines, params.edge_margin)
-    for index, level in enumerate(rms):
-        if level > threshold:
-            return _time_at_window_start(i0, index, hop_len, sr)
-    return seg_start
+    return _leading_edge_after_sustained_speech(
+        rms,
+        threshold,
+        params.min_speech_windows,
+        i0,
+        hop_len,
+        sr,
+        seg_start,
+    )
 
 
 def _trim_trailing_edge(
@@ -297,23 +374,27 @@ def _trim_trailing_edge(
         return seg_end
 
     threshold = _edge_threshold(baselines.trailing, baselines, params.edge_margin)
-    for index in range(len(rms) - 1, -1, -1):
-        if rms[index] > threshold:
-            return _time_at_window_end(i0, index, hop_len, frame_len, sr, i1)
-    return seg_end
+    return _trailing_edge_after_sustained_speech(
+        rms,
+        threshold,
+        params.min_speech_windows,
+        i0,
+        i1,
+        hop_len,
+        frame_len,
+        sr,
+        seg_end,
+    )
 
 
-def fix_segment_boundaries(
-    wav_path: Path,
+def _trim_segments_one_pass(
+    wav: np.ndarray,
+    sr: int,
     segments: list[dict],
-    *,
-    trim_params: EdgeTrimParams | None = None,
+    params: EdgeTrimParams,
+    baselines: GlobalBaselines,
 ) -> tuple[list[dict], int, int]:
-    """Trim edge padding using file-wide edge RMS baselines."""
-    params = trim_params or EdgeTrimParams()
-    wav, sr = _load_mono_wav(wav_path)
-    baselines = _compute_global_baselines(wav, sr, segments, params)
-
+    """Apply one leading/trailing trim pass using precomputed global baselines."""
     fixed: list[dict] = []
     onset_fixes = 0
     offset_fixes = 0
@@ -349,6 +430,33 @@ def fix_segment_boundaries(
         fixed.append(row)
 
     return fixed, onset_fixes, offset_fixes
+
+
+def fix_segment_boundaries(
+    wav_path: Path,
+    segments: list[dict],
+    *,
+    trim_params: EdgeTrimParams | None = None,
+) -> tuple[list[dict], int, int]:
+    """Trim edge padding using file-wide edge RMS baselines (multi-pass)."""
+    params = trim_params or EdgeTrimParams()
+    wav, sr = _load_mono_wav(wav_path)
+    current = [dict(item) for item in segments]
+    total_onset = 0
+    total_offset = 0
+    passes = max(1, params.trim_passes)
+
+    for _ in range(passes):
+        baselines = _compute_global_baselines(wav, sr, current, params)
+        current, onset_fixes, offset_fixes = _trim_segments_one_pass(
+            wav, sr, current, params, baselines
+        )
+        total_onset += onset_fixes
+        total_offset += offset_fixes
+        if onset_fixes == 0 and offset_fixes == 0:
+            break
+
+    return current, total_onset, total_offset
 
 
 def load_seglst(path: Path) -> list[dict]:
@@ -468,6 +576,24 @@ def main() -> int:
             "(default: 6)"
         ),
     )
+    parser.add_argument(
+        "--min-speech-windows",
+        type=int,
+        default=DEFAULT_MIN_SPEECH_WINDOWS,
+        help=(
+            "Consecutive above-threshold RMS windows required to mark speech at an "
+            "edge (default: 4)"
+        ),
+    )
+    parser.add_argument(
+        "--trim-passes",
+        type=int,
+        default=DEFAULT_TRIM_PASSES,
+        help=(
+            "Number of trim passes; baselines are recomputed between passes "
+            "(default: 2)"
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -489,6 +615,8 @@ def main() -> int:
         min_trim_s=args.min_trim,
         ref_percentile=args.ref_percentile,
         speech_skip_ratio=args.speech_skip_ratio,
+        min_speech_windows=args.min_speech_windows,
+        trim_passes=args.trim_passes,
     )
 
     jobs = collect_jobs(input_root, args.session)
