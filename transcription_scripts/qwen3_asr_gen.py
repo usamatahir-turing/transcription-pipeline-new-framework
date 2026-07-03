@@ -13,6 +13,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from segment_creation_scripts.speech_detection import is_pipeline_wav
+
 log = logging.getLogger(__name__)
 
 INPUT_SEGLST_SUFFIX = ".seglst.json"
@@ -216,6 +218,8 @@ def collect_jobs(
 
     for session_dir in session_dirs:
         for wav_path in sorted(session_dir.glob("*.wav")):
+            if not is_pipeline_wav(wav_path):
+                continue
             seglst_path = wav_path.with_name(f"{wav_path.stem}{INPUT_SEGLST_SUFFIX}")
             out_path = output_path_for_wav(wav_path)
             jobs.append((wav_path, seglst_path, out_path))

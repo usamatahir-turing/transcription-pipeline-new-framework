@@ -15,6 +15,12 @@ import soundfile as sf
 
 log = logging.getLogger(__name__)
 
+
+def is_pipeline_wav(wav_path: Path) -> bool:
+    """Return False for mixed-channel WAVs (not processed by the pipeline)."""
+    return "mixed" not in wav_path.stem.lower()
+
+
 SILERO_SR = 16000
 MERGE_COLLAR_S = 0.2
 MODEL_PADDING_S = 0.05
@@ -236,6 +242,8 @@ def collect_wav_jobs(
         session_dirs = sorted(p for p in input_root.iterdir() if p.is_dir())
     for session_dir in session_dirs:
         for wav_path in sorted(session_dir.glob("*.wav")):
+            if not is_pipeline_wav(wav_path):
+                continue
             jobs.append(wav_path)
     return jobs
 

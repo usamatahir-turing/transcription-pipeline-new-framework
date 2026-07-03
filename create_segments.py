@@ -32,6 +32,7 @@ from segment_creation_scripts.speech_detection import (
     _get_torch_device,
     build_seglst,
     collect_wav_jobs,
+    is_pipeline_wav,
     seglst_output_path,
 )
 from segment_creation_scripts.uncovered_segment_detection_rms import (
@@ -79,6 +80,14 @@ def resolve_wav_jobs(
             raise FileNotFoundError(f"Session folder not found: {session_dir}")
         for speaker in speakers:
             wav_path = session_dir / f"{speaker}.wav"
+            if not is_pipeline_wav(wav_path):
+                log.warning(
+                    "Skipping mixed-channel WAV for speaker %s in session %s (%s)",
+                    speaker,
+                    session_name,
+                    wav_path.name,
+                )
+                continue
             if wav_path.is_file():
                 jobs.append(wav_path)
             else:
