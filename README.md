@@ -87,13 +87,23 @@ All sessions under `input_audio_files/`:
 python create_segments.py
 ```
 
-### Segmentation only
+### Segmentation only (loose boundaries)
 
-Writes `{speaker}.seglst.json` only (no GPU ASR or finalization). Skips if that file already exists.
+Writes `{speaker}.seglst.json` only (no GPU ASR or finalization). Skips if that file already exists. Boundaries are **not** trimmed (pre–boundary-fix merge).
 
 ```powershell
 python create_segments.py --session NV-AR-SS04-CONVO10 --skip-asr
 ```
+
+### Segmentation + boundary fix (no ASR)
+
+Use `create_pre_segments.py` when you want the same **trimmed** segment boundaries as the full pipeline (`{speaker}_final.seglst.json`) but without running Qwen3. Also writes `{speaker}.seglst.json` (pre-trim merge, empty `words`) for a later ASR step.
+
+```powershell
+python create_pre_segments.py --session NV-AR-SS04-CONVO10
+```
+
+Resumes if `{speaker}_final.seglst.json` already exists (use `--overwrite` to re-run). Same flags as `create_segments.py` for `--session`, `--speaker`, `--ref-ms`, `--min-trim`, and intermediates.
 
 ### ASR without boundary fix
 
